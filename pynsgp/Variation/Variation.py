@@ -5,7 +5,6 @@ from numpy.random import random
 
 
 def GenerateRandomTree(functions, terminals, max_height, curr_height=0, method='grow', min_depth=2):
-
 	if curr_height == max_height:
 		idx = randint(len(terminals))
 		n = deepcopy( terminals[idx] )
@@ -26,7 +25,6 @@ def GenerateRandomTree(functions, terminals, max_height, curr_height=0, method='
 	return n
 
 def OnePointMutation( individual, functions, terminals ):
-	
 	arity_functions = {}
 	for f in functions:
 		arity = f.arity
@@ -60,8 +58,6 @@ def OnePointMutation( individual, functions, terminals ):
 			else:
 				nodes[i] = n
 				individual = n
-			
-
 	return individual
 
 
@@ -70,7 +66,6 @@ def OnePointMutation( individual, functions, terminals ):
 def SubtreeMutation( individual, functions, terminals, max_height=4 ):
 
 	mutation_branch = GenerateRandomTree( functions, terminals, max_height )
-	
 	nodes = individual.GetSubtree()
 
 	#nodes = __GetCandidateNodesAtUniformRandomDepth( nodes )

@@ -6,6 +6,10 @@ from copy import deepcopy
 from pynsgp.Variation import Variation
 from pynsgp.Selection import Selection
 
+from pynsgp.Nodes.SymbolicRegressionNodes import FeatureNode, EphemeralRandomConstantNode
+
+from pynsgp.Nodes.MultiTreeRepresentation import MultiTreeIndividual
+
 
 class pyNSGP:
 
@@ -25,6 +29,9 @@ class pyNSGP:
 		min_depth=2,
 		max_tree_size=100,
 		tournament_size=4,
+		use_multi_tree=False,
+		num_sub_functions=4,
+		num_sup_functions=1,
 		verbose=False
 		):
 
@@ -42,10 +49,30 @@ class pyNSGP:
 
 		self.initialization_max_tree_height = initialization_max_tree_height
 		self.min_depth = min_depth
+		assert(min_depth <= initialization_max_tree_height)	
 		self.max_tree_size = max_tree_size
 		self.tournament_size = tournament_size
 
 		self.generations = 0
+
+		self.use_multi_tree=use_multi_tree
+		self.num_sub_functions=num_sub_functions
+		self.num_sup_functions=num_sup_functions
+
+		if self.use_multi_tree:
+			# the terminals of the sup_functions are the sub_functions
+			self.supfun_terminals = list()
+			for i in range(int(self.num_sub_functions)):
+				self.supfun_terminals.append(FeatureNode(i))
+
+			# if num_sub_functions is 0, then the sup_functions use the original terminal set
+			if self.num_sub_functions == 0:
+				self.supfun_terminals = self.terminals
+			else:
+			# add ephemeral random constants if they were also in the terminals
+				for node in self.terminals:
+					if isinstance(node, EphemeralRandomConstantNode):
+						self.supfun_terminals.append(EphemeralRandomConstantNode())
 
 		self.verbose = verbose
 
@@ -83,13 +110,34 @@ class pyNSGP:
 				next_depth_interval += init_depth_interval
 				curr_max_depth += 1
 
-			g = Variation.GenerateRandomTree( self.functions, self.terminals, curr_max_depth, curr_height=0, method='grow', min_depth=self.min_depth )
+			if self.use_multi_tree:
+				g = MultiTreeIndividual(self.num_sup_functions, self.num_sub_functions)
+				g.InitializeRandom( 
+					self.functions, self.supfun_terminals, 
+					self.functions, self.terminals,
+					method='grow',
+					max_supfun_height=curr_max_depth, min_supfun_height=self.min_depth, 
+					max_subfun_height=curr_max_depth, min_subfun_height=self.min_depth,
+					)
+
+				f = MultiTreeIndividual(self.num_sup_functions, self.num_sub_functions)
+				f.InitializeRandom( 
+					self.functions, self.supfun_terminals, 
+					self.functions, self.terminals,
+					method='full',
+					max_supfun_height=curr_max_depth, min_supfun_height=self.min_depth, 
+					max_subfun_height=curr_max_depth, min_subfun_height=self.min_depth,
+					)
+
+			else:
+				g = Variation.GenerateRandomTree( self.functions, self.terminals, curr_max_depth, curr_height=0, method='grow', min_depth=self.min_depth )
+				f = Variation.GenerateRandomTree( self.functions, self.terminals, curr_max_depth, curr_height=0, method='full', min_depth=self.min_depth ) 
+
 			self.fitness_function.Evaluate( g )
 			self.population.append( g )
-			
-			f = Variation.GenerateRandomTree( self.functions, self.terminals, curr_max_depth, curr_height=0, method='full', min_depth=self.min_depth ) 
 			self.fitness_function.Evaluate( f )
 			self.population.append( f )
+
 
 
 		while not self.__ShouldTerminate():
@@ -98,19 +146,69 @@ class pyNSGP:
 
 			O = []
 			for i in range( self.pop_size ):
+				
 				o = deepcopy(selected[i])
-				if ( random() < self.crossover_rate ):
-					o = Variation.SubtreeCrossover( o, selected[ randint( self.pop_size ) ] )
-				if ( random() < self.mutation_rate ):
-					o = Variation.SubtreeMutation( o, self.functions, self.terminals, max_height=self.initialization_max_tree_height )
-				if ( random() < self.op_mutation_rate ):
-					o = Variation.OnePointMutation( o, self.functions, self.terminals )
+				variation_event_happened = False
 
-				if (len(o.GetSubtree()) > self.max_tree_size) or (o.GetHeight() < self.min_depth):
-					del o
-					o = deepcopy( selected[i] )
-				else:
+				# variation of multi trees
+				if isinstance(o, MultiTreeIndividual):
+
+					while not variation_event_happened:
+
+						''' 
+						To avoid making too many changes (else they'd lead to random search!)
+						I divide the probability of each event by the number of components that can
+						be changed in a multitree
+						'''
+						tot_num_components = o.num_sub_functions + o.num_sup_functions
+						for i in range(o.num_sub_functions):
+							if ( random() < self.crossover_rate / tot_num_components ):
+								o.sub_functions[i] = Variation.SubtreeCrossover( o.sub_functions[i], selected[ randint( self.pop_size ) ].sub_functions[i] )
+								variation_event_happened = True
+							elif ( random() < self.mutation_rate / tot_num_components):
+								o.sub_functions[i] = Variation.SubtreeMutation( o.sub_functions[i], self.functions, self.terminals, max_height=self.initialization_max_tree_height )
+								variation_event_happened = True
+							elif ( random() < self.op_mutation_rate / tot_num_components ):
+								o.sub_functions[i] = Variation.OnePointMutation( o.sub_functions[i], self.functions, self.terminals )
+								variation_event_happened = True
+
+							# correct for violation of constraints
+							if (len(o.sub_functions[i].GetSubtree()) > self.max_tree_size) or (o.sub_functions[i].GetHeight() < self.min_depth):
+								o.sub_functions[i] = deepcopy( selected[i].sub_functions[i] )
+							
+						for i in range(o.num_sup_functions):
+							if ( random() < self.crossover_rate / tot_num_components ):
+								o.sup_functions[i] = Variation.SubtreeCrossover( o.sup_functions[i], selected[ randint( self.pop_size ) ].sup_functions[i] )
+								variation_event_happened = True
+							elif ( random() < self.mutation_rate / tot_num_components):
+								o.sup_functions[i] = Variation.SubtreeMutation( o.sup_functions[i], self.functions, self.supfun_terminals, max_height=self.initialization_max_tree_height )
+								variation_event_happened = True
+							elif ( random() < self.op_mutation_rate / tot_num_components ):
+								o.sup_functions[i] = Variation.OnePointMutation( o.sup_functions[i], self.functions, self.supfun_terminals )
+								variation_event_happened = True
+
+							# correct for violation of constraints
+							if (self.fitness_function.EvaluateLength(o) > self.max_tree_size) or (o.sup_functions[i].GetHeight() < self.min_depth):
+								o.sup_functions[i] = deepcopy( selected[i].sup_functions[i] )
 					self.fitness_function.Evaluate(o)
+
+				# variation of normal individuals
+				else:
+					while not variation_event_happened:
+						if ( random() < self.crossover_rate ):
+							o = Variation.SubtreeCrossover( o, selected[ randint( self.pop_size ) ] )
+							variation_event_happened = True
+						elif ( random() < self.mutation_rate ):
+							o = Variation.SubtreeMutation( o, self.functions, self.terminals, max_height=self.initialization_max_tree_height )
+							variation_event_happened = True
+						elif ( random() < self.op_mutation_rate ):
+							o = Variation.OnePointMutation( o, self.functions, self.terminals )
+							variation_event_happened = True
+
+					if (len(o.GetSubtree()) > self.max_tree_size) or (o.GetHeight() < self.min_depth):
+						o = deepcopy( selected[i] )
+					else:
+						self.fitness_function.Evaluate(o)
 
 				O.append(o)
 
@@ -142,11 +240,12 @@ class pyNSGP:
 					del fronts[curr_front_idx][0]
 
 			self.population = new_population
-
 			self.generations = self.generations + 1
 
 			if self.verbose:
-				print ('g:',self.generations,'elite obj1:', np.round(self.fitness_function.elite.objectives[0],3), ', size:', len(self.fitness_function.elite.GetSubtree()))
+				print ('g:',self.generations,'elite obj1:', np.round(self.fitness_function.elite.objectives[0],3), 
+					', obj2:', np.round(self.fitness_function.elite.objectives[1],3))
+				print('elite:', self.fitness_function.elite.GetHumanExpression())
 
 
 	def FastNonDominatedSorting(self, population):
